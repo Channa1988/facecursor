@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HANDRAW — Draw with your hands</title>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+<style>
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+  :root{--bg:#0a0a0f;--surface:#12121a;--border:#2a2a3a;--accent:#ff3c6e;--accent2:#00e5ff;--text:#e8e8f0;--muted:#555570}
+  body{background:var(--bg);color:var(--text);font-family:'Space Mono',monospace;height:100vh;overflow:hidden;display:flex;flex-direction:column}
+  header{display:flex;align-items:center;justify-content:space-between;padding:10px 20px;border-bottom:1px solid var(--border);background:var(--surface);z-index:10;flex-shrink:0}
+  .logo{font-family:'Bebas Neue',sans-serif;font-size:28px;letter-spacing:4px;color:var(--text)}
+  .logo span{color:var(--accent)}
+  .status-pill{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:1px}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--muted);transition:background .3s}
+  .dot.active{background:#00ff88;box-shadow:0 0 8px #00ff88}
+  .dot.drawing{background:var(--accent);box-shadow:0 0 8px var(--accent)}
+  .workspace{flex:1;display:flex;overflow:hidden;position:relative}
+  #drawCanvas{position:absolute;inset:0;width:100%;height:100%;cursor:none;background:#0e0e16}
+  #videoEl{display:none}
+  #pipPreview{position:absolute;bottom:80px;right:16px;width:160px;height:120px;border-radius:10px;border:1px solid var(--border);overflow:hidden;z-index:20;opacity:.85;transform:scaleX(-1)}
+  #pipCanvas{width:100%;height:100%;display:block}
+  .toolbar{position:absolute;bottom:0;left:0;right:0;height:68px;background:var(--surface);border-top:1px solid var(--border);display:flex;align-items:center;gap:12px;padding:0 20px;z-index:20;overflow-x:auto}
+  .tb-label{font-size:9px;text-transform:uppercase;letter-spacing:2px;color:var(--muted);white-space:nowrap;margin-right:4px}
+  .color-swatch{width:28px;height:28px;border-radius:50%;border:2px solid transparent;cursor:pointer;transition:transform .15s,border-color .15s;flex-shrink:0}
+  .color-swatch:hover{transform:scale(1.2)}
+  .color-swatch.active{border-color:white;transform:scale(1.2)}
+  .size-btn{background:none;border:1px solid var(--border);color:var(--text);font-family:'Space Mono',monospace;font-size:11px;padding:5px 10px;border-radius:4px;cursor:pointer;transition:all .15s;flex-shrink:0;white-space:nowrap}
+  .size-btn:hover,.size-btn.active{background:var(--accent);border-color:var(--accent);color:white}
+  .sep{width:1px;height:36px;background:var(--border);flex-shrink:0;margin:0 4px}
+  .tool-btn{background:none;border:1px solid var(--border);color:var(--text);font-family:'Space Mono',monospace;font-size:11px;padding:6px 12px;border-radius:4px;cursor:pointer;transition:all .15s;flex-shrink:0;white-space:nowrap}
+  .tool-btn:hover{background:var(--border)}
+  .tool-btn.active{background:var(--accent2);border-color:var(--accent2);color:#000;font-weight:700}
+  .tool-btn.danger:hover{background:var(--accent);border-color:var(--accent);color:white}
+  #cursorOverlay{position:absolute;inset:0;pointer-events:none;z-index:15}
+  .gesture-toast{position:absolute;top:16px;left:50%;transform:translateX(-50%);background:rgba(255,60,110,.15);border:1px solid var(--accent);color:var(--accent);font-size:12px;letter-spacing:1px;padding:6px 16px;border-radius:20px;z-index:30;opacity:0;transition:opacity .3s;pointer-events:none;white-space:nowrap}
+  .gesture-toast.show{opacity:1}
+  #loadingOverlay{position:absolute;inset:0;background:var(--bg);z-index:100;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:20px}
+  .load-title{font-family:'Bebas Neue',sans-serif;font-size:52px;letter-spacing:8px}
+  .load-title span{color:var(--accent)}
+  .load-sub{font-size:12px;color:var(--muted);letter-spacing:2px;text-transform:uppercase}
+  .load-bar-wrap{width:240px;height:2px;background:var(--border);border-radius:2px;overflow:hidden}
+  .load-bar{height:100%;width:0%;background:var(--accent);animation:lp 2.5s ease forwards}
+  @keyframes lp{to{width:100%}}
+  .hint-box{margin-top:8px;display:flex;gap:24px}
+  .hint{display:flex;flex-direction:column;align-items:center;gap:6px;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:1px}
+  .hint-icon{font-size:28px;line-height:1}
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">HAND<span>RAW</span></div>
+  <div class="status-pill"><div class="dot" id="statusDot"></div><span id="statusText">initializing</span></div>
+</header>
+<div class="workspace">
+  <canvas id="drawCanvas"></canvas>
+  <canvas id="cursorOverlay"></canvas>
+  <div id="pipPreview"><canvas id="pipCanvas"></canvas></div>
+  <div class="gesture-toast" id="gestureToast"></div>
+  <div id="loadingOverlay">
+    <div class="load-title">HAND<span>RAW</span></div>
+    <div class="load-sub">Loading hand tracker…</div>
+    <div class="load-bar-wrap"><div class="load-bar"></div></div>
+    <div class="hint-box">
+      <div class="hint"><div class="hint-icon">☝️</div>index finger = draw</div>
+      <div class="hint"><div class="hint-icon">🤌</div>pinch = lift pen</div>
+      <div class="hint"><div class="hint-icon">✌️</div>two fingers = erase</div>
+    </div>
+  </div>
+  <video id="videoEl" playsinline></video>
+</div>
+<div class="toolbar">
+  <span class="tb-label">Color</span>
+  <div class="color-swatch active" style="background:#ff3c6e" data-color="#ff3c6e"></div>
+  <div class="color-swatch" style="background:#00e5ff" data-color="#00e5ff"></div>
+  <div class="color-swatch" style="background:#b8ff57" data-color="#b8ff57"></div>
+  <div class="color-swatch" style="background:#ffcc00" data-color="#ffcc00"></div>
+  <div class="color-swatch" style="background:#c47aff" data-color="#c47aff"></div>
+  <div class="color-swatch" style="background:#ff8c42" data-color="#ff8c42"></div>
+  <div class="color-swatch" style="background:#ffffff" data-color="#ffffff"></div>
+  <div class="sep"></div>
+  <span class="tb-label">Size</span>
+  <button class="size-btn" data-size="3">XS</button>
+  <button class="size-btn active" data-size="6">S</button>
+  <button class="size-btn" data-size="12">M</button>
+  <button class="size-btn" data-size="22">L</button>
+  <button class="size-btn" data-size="40">XL</button>
+  <div class="sep"></div>
+  <button class="tool-btn" id="eraserBtn">✦ ERASER</button>
+  <button class="tool-btn danger" id="clearBtn">⊘ CLEAR</button>
+  <button class="tool-btn" id="saveBtn">⬇ SAVE</button>
+</div>
+<script>
+const drawCanvas=document.getElementById('drawCanvas');
+const cursorOverlay=document.getElementById('cursorOverlay');
+const pipCanvas=document.getElementById('pipCanvas');
+const videoEl=document.getElementById('videoEl');
+const statusDot=document.getElementById('statusDot');
+const statusText=document.getElementById('statusText');
+const gestureToast=document.getElementById('gestureToast');
+const loadingOverlay=document.getElementById('loadingOverlay');
+const dctx=drawCanvas.getContext('2d');
+const cctx=cursorOverlay.getContext('2d');
+const pctx=pipCanvas.getContext('2d');
+
+let color='#ff3c6e', brushSize=6, isEraser=false, toastTimeout=null;
+
+// ── Smooth stroke system ──────────────────────────────────────
+// Point buffer: collect recent positions, flush as Catmull-Rom spline
+const BUFFER_SIZE = 6;
+const MIN_DIST = 2;
+let ptBuffer = [];
+let smoothX = null, smoothY = null;
+
+function expSmooth(prev, next, alpha) {
+  return prev === null ? next : prev + alpha * (next - prev);
+}
+
+function catmullRom(p0, p1, p2, p3, t) {
+  const t2=t*t, t3=t2*t;
+  return {
+    x: 0.5*((2*p1.x)+(-p0.x+p2.x)*t+(2*p0.x-5*p1.x+4*p2.x-p3.x)*t2+(-p0.x+3*p1.x-3*p2.x+p3.x)*t3),
+    y: 0.5*((2*p1.y)+(-p0.y+p2.y)*t+(2*p0.y-5*p1.y+4*p2.y-p3.y)*t2+(-p0.y+3*p1.y-3*p2.y+p3.y)*t3)
+  };
+}
+
+function flushStroke(useEraser) {
+  if (ptBuffer.length < 2) { ptBuffer=[]; return; }
+  dctx.globalCompositeOperation = useEraser ? 'destination-out' : 'source-over';
+  dctx.strokeStyle = useEraser ? 'rgba(0,0,0,1)' : color;
+  dctx.lineWidth = useEraser ? brushSize*3 : brushSize;
+  dctx.lineCap = 'round';
+  dctx.lineJoin = 'round';
+
+  const pts = ptBuffer;
+  if (pts.length === 2) {
+    dctx.beginPath(); dctx.moveTo(pts[0].x,pts[0].y); dctx.lineTo(pts[1].x,pts[1].y); dctx.stroke();
+  } else {
+    const p=[pts[0],...pts,pts[pts.length-1]];
+    dctx.beginPath(); dctx.moveTo(pts[0].x,pts[0].y);
+    for (let i=0;i<pts.length-1;i++) {
+      for (let s=1;s<=8;s++) {
+        const pt=catmullRom(p[i],p[i+1],p[i+2],p[i+3],s/8);
+        dctx.lineTo(pt.x,pt.y);
+      }
+    }
+    dctx.stroke();
+  }
+  dctx.globalCompositeOperation='source-over';
+  ptBuffer=[ptBuffer[ptBuffer.length-1]]; // keep last as anchor
+}
+
+function addPoint(x, y, useEraser) {
+  const last=ptBuffer[ptBuffer.length-1];
+  if (last && Math.hypot(x-last.x,y-last.y)<MIN_DIST) return;
+  ptBuffer.push({x,y});
+  if (ptBuffer.length>=BUFFER_SIZE) flushStroke(useEraser);
+}
+
+function liftPen() {
+  if (ptBuffer.length>1) flushStroke(isEraser);
+  ptBuffer=[]; smoothX=null; smoothY=null;
+}
+
+// ── Resize ────────────────────────────────────────────────────
+function resize() {
+  const ws=document.querySelector('.workspace');
+  const W=ws.clientWidth, H=ws.clientHeight;
+  const img=dctx.getImageData(0,0,drawCanvas.width,drawCanvas.height);
+  drawCanvas.width=W; drawCanvas.height=H;
+  cursorOverlay.width=W; cursorOverlay.height=H;
+  try{dctx.putImageData(img,0,0);}catch(e){}
+}
+resize(); window.addEventListener('resize',resize);
+
+function showToast(msg) {
+  gestureToast.textContent=msg; gestureToast.classList.add('show');
+  clearTimeout(toastTimeout);
+  toastTimeout=setTimeout(()=>gestureToast.classList.remove('show'),1500);
+}
+
+// ── Controls ──────────────────────────────────────────────────
+document.querySelectorAll('.color-swatch').forEach(s=>{
+  s.addEventListener('click',()=>{
+    document.querySelectorAll('.color-swatch').forEach(x=>x.classList.remove('active'));
+    s.classList.add('active'); color=s.dataset.color; isEraser=false;
+    eraserBtn.classList.remove('active');
+  });
+});
+document.querySelectorAll('.size-btn').forEach(b=>{
+  b.addEventListener('click',()=>{
+    document.querySelectorAll('.size-btn').forEach(x=>x.classList.remove('active'));
+    b.classList.add('active'); brushSize=parseInt(b.dataset.size);
+  });
+});
+const eraserBtn=document.getElementById('eraserBtn');
+eraserBtn.addEventListener('click',()=>{isEraser=!isEraser;eraserBtn.classList.toggle('active',isEraser);});
+document.getElementById('clearBtn').addEventListener('click',()=>{
+  dctx.clearRect(0,0,drawCanvas.width,drawCanvas.height); liftPen(); showToast('CANVAS CLEARED');
+});
+document.getElementById('saveBtn').addEventListener('click',()=>{
+  const a=document.createElement('a'); a.download='handraw-'+Date.now()+'.png';
+  a.href=drawCanvas.toDataURL('image/png'); a.click(); showToast('SAVED AS PNG');
+});
+
+// ── Hand Tracking ─────────────────────────────────────────────
+function dist(a,b){return Math.hypot(a.x-b.x,a.y-b.y);}
+function isPinching(lm){return dist(lm[4],lm[8])<0.065;}
+function isTwoFingerUp(lm){return lm[8].y<lm[6].y&&lm[12].y<lm[10].y&&lm[16].y>lm[14].y;}
+
+function onResults(results) {
+  const W=drawCanvas.width, H=drawCanvas.height;
+  pctx.save(); pctx.clearRect(0,0,pipCanvas.width,pipCanvas.height);
+  pctx.drawImage(results.image,0,0,pipCanvas.width,pipCanvas.height);
+  if(results.multiHandLandmarks){
+    for(const lm of results.multiHandLandmarks){
+      drawConnectors(pctx,lm,HAND_CONNECTIONS,{color:'rgba(0,229,255,0.5)',lineWidth:1.5});
+      drawLandmarks(pctx,lm,{color:'#ff3c6e',lineWidth:1,radius:2});
+    }
+  }
+  pctx.restore(); cctx.clearRect(0,0,W,H);
+
+  if(!results.multiHandLandmarks||!results.multiHandLandmarks.length){
+    liftPen(); statusDot.className='dot active'; statusText.textContent='no hand detected'; return;
+  }
+
+  const lm=results.multiHandLandmarks[0];
+  const tip=lm[8];
+  // Exponential smoothing on raw position to kill jitter
+  smoothX=expSmooth(smoothX,(1-tip.x)*W,0.6);
+  smoothY=expSmooth(smoothY,tip.y*H,0.6);
+  const x=smoothX, y=smoothY;
+
+  if(isPinching(lm)){
+    liftPen(); statusDot.className='dot active'; statusText.textContent='pinch — pen up';
+    cctx.beginPath(); cctx.arc(x,y,14,0,Math.PI*2);
+    cctx.strokeStyle='rgba(255,60,110,0.8)'; cctx.lineWidth=2; cctx.stroke();
+    cctx.beginPath(); cctx.arc(x,y,4,0,Math.PI*2); cctx.fillStyle='#ff3c6e'; cctx.fill();
+    return;
+  }
+
+  if(isTwoFingerUp(lm)){
+    statusDot.className='dot drawing'; statusText.textContent='erasing';
+    addPoint(x,y,true);
+    cctx.beginPath(); cctx.arc(x,y,22,0,Math.PI*2);
+    cctx.strokeStyle='rgba(255,255,255,0.5)'; cctx.lineWidth=2; cctx.stroke();
+    return;
+  }
+
+  // Draw
+  statusDot.className='dot drawing'; statusText.textContent='drawing';
+  addPoint(x,y,isEraser);
+
+  // Cursor
+  const cc=isEraser?'rgba(255,255,255,0.8)':color;
+  const cr=(isEraser?brushSize*1.5:brushSize/2)+4;
+  cctx.beginPath(); cctx.arc(x,y,cr,0,Math.PI*2);
+  cctx.strokeStyle=cc; cctx.lineWidth=2; cctx.stroke();
+  cctx.beginPath(); cctx.arc(x,y,3,0,Math.PI*2); cctx.fillStyle=cc; cctx.fill();
+  cctx.globalAlpha=0.35; cctx.strokeStyle=cc; cctx.lineWidth=1;
+  cctx.beginPath(); cctx.moveTo(x-14,y); cctx.lineTo(x+14,y);
+  cctx.moveTo(x,y-14); cctx.lineTo(x,y+14); cctx.stroke();
+  cctx.globalAlpha=1;
+}
+
+async function init(){
+  const hands=new Hands({locateFile:f=>`https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}`});
+  hands.setOptions({maxNumHands:1,modelComplexity:0,minDetectionConfidence:0.65,minTrackingConfidence:0.55});
+  hands.onResults(onResults);
+  const camera=new Camera(videoEl,{
+    onFrame:async()=>{await hands.send({image:videoEl});},
+    width:640,height:480
+  });
+  try{
+    await camera.start();
+    statusDot.className='dot active'; statusText.textContent='camera ready';
+    loadingOverlay.style.transition='opacity 0.5s'; loadingOverlay.style.opacity='0';
+    setTimeout(()=>loadingOverlay.remove(),600);
+    showToast('RAISE YOUR HAND TO BEGIN');
+  }catch(e){
+    statusText.textContent='camera blocked';
+    loadingOverlay.querySelector('.load-sub').textContent='Camera access denied. Allow camera and reload.';
+  }
+}
+window.addEventListener('load',()=>setTimeout(init,400));
+</script>
+</body>
+</html>
